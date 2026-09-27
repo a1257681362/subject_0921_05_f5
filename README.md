@@ -31,6 +31,9 @@ Spring Boot 骨架项目。技术栈：Java 8、Spring Boot 2.7、MyBatis-Plus�
 | `t_sensitive_scan_log` | 加工单文本敏感词扫描留痕（只追加，PASS/MASK/BLOCK/RECHECK） |
 | `t_batch_job` | 批量后台任务主表（RECHECK 等；进度/取消/重跑；运维数据，终态 21 天后物理清理） |
 | `t_batch_job_item` | 批量任务明细（每张加工单一行，断点重跑依据；随任务 21 天清理） |
+| `t_quota_account` | 门店额度账户（核定总额/预占中/已实扣，按门店唯一） |
+| `t_quota_reservation` | 额度预占单（RESERVED/CONFIRMED/RELEASED/EXPIRED，40 分钟有效） |
+| `t_quota_ledger` | 额度明细流水（只追加，每笔动作后账户快照，按 biz_date 对账） |
 
 ## 加工单状态
 
@@ -66,6 +69,23 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - **保留 21 天**：终态任务 `expire_time = 完成时间 + 21 天`，每日 03:17 定时物理清理任务及明细（`evops.batch.retain-days` / `evops.batch.cleanup-cron` 可调）。这是全库"禁止物理删除"的唯一例外——任务记录是运维临时数据，业务留痕仍只追加。
 - 同步接口 `POST /api/sensitive/recheck` 保留：应急/小批量及别组既有取数方式不受影响。
 - 周末变更窗口实施前，向验光师发放检查单：`docs/batch-job-weekend-checklist.md`。
+
+## 门店额度三段式（预占-确认-释放）
+
+连锁额度按门店建账户，开单先预占、结算再实扣、取消可释放：
+
+```
+RESERVED 占用中 ──confirm──▶ CONFIRMED 已实扣（终态，账户预占→实扣）
+      ├──release──▶ RELEASED 已释放（终态，手工触发，额度还回可用）
+      └──expire───▶ EXPIRED 超时已还（终态，超过 40 分钟定时任务自动归还；启动补扫停机期间过期单）
+```
+
+- **40 分钟有效期**：`expire_time = 预占业务时间 + evops.quota.hold-minutes`（默认 40）；实扣必须在有效期内，过期单只能重新预占。
+- **实扣以预占为前提**：无预占单/已结算/已过期一律拒绝（`QUOTA_RESERVATION_NOT_FOUND/STATUS_ILLEGAL/EXPIRED`）。
+- **并发不超占**：预占扣减走带守卫条件的 UPDATE（`total - reserved - used >= 预占额`），不足返回 `QUOTA_NOT_ENOUGH`；账户、预占单、流水同一事务；重复提交由 `uk_quota_rsv_request(request_no)` 兜底。
+- **明细流水可对账**：`t_quota_ledger` 只追加，每个动作一行（RESERVE/CONFIRM/RELEASE/EXPIRE），带业务日 `biz_date` 与动作后账户快照（`reserved_after/used_after`）。
+- **日结对平**：`GET /api/quota/reconcile` 校验①当日预占合计 = 实扣+释放+过期+期末未结；②账户预占余额 = 全量未结预占单；③账户实扣累计 = 全量实扣流水；任一不等 `balanced=false` 并列出 `mismatches`。
+- 验光师操作手册：`docs/quota-ops-manual.md`（建户、日常四步、日结、演练方法，每条命令可照抄）。
 
 ## 日志链路与聚合检索（总部质控要求）
 
@@ -110,6 +130,16 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - `POST /api/batch/jobs` 提交任务（`{"jobType":"RECHECK","storeCode":?}`，立即返回任务号）
 - `GET  /api/batch/jobs/{jobNo}` 查进度（5% 粒度）与终态报告；`GET /api/batch/jobs?status=&jobType=` 列表
 - `POST /api/batch/jobs/{jobNo}/cancel` 取消；`POST /api/batch/jobs/{jobNo}/rerun` 断点重跑
+
+门店额度（预占-确认-释放三段式，操作手册 `docs/quota-ops-manual.md`）：
+
+- `POST /api/quota/accounts` 建户（`{"storeCode","totalQuota"}`）；`PUT /api/quota/accounts/{storeCode}` 调总额度（不得低于预占+实扣）
+- `GET  /api/quota/accounts/{storeCode}` 账户与可用额度（总额-预占-实扣）
+- `POST /api/quota/reserve` 预占（`{"storeCode","amount","bizRef"?}`，**40 分钟内有效**，返回 reservationNo/expireTime）
+- `POST /api/quota/confirm` 实扣（**以有效预占为前提**：`{"reservationNo"}`，过期返回 QUOTA_RESERVATION_EXPIRED）
+- `POST /api/quota/release` 手工释放（过期单按超时还结算）；超时预占每分钟由定时任务自动归还（启动补扫）
+- `GET  /api/quota/reservations/{reservationNo}` 预占单
+- `GET  /api/quota/ledger?storeCode=&bizDate=` 明细流水（只追加）；`GET /api/quota/reconcile?storeCode=&bizDate=` 日结对平（balanced）
 
 示例（接口走 Shiro 认证，测试/本地可用 bootstrap/bootstrap）：
 

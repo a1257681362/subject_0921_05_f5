@@ -36,6 +36,11 @@ mybatis-plus:
     map-underscore-to-camel-case: true
 
 evops:
+  quota:
+    # 预占占用有效期（分钟）：超时由定时任务自动归还；实扣必须在有效期内完成
+    hold-minutes: 40
+    # 过期预占扫描（默认每分钟第 17 秒，避开整分）；启动时另补扫一次停机期间过期的预占
+    expire-scan-cron: "17 * * * * ?"
   sensitive:
     # 敏感词库路径。classpath: 随包默认；生产改 file:/path/sensitive-words.txt，
     # 文件变更自动热更新（扫描前懒检查 mtime），或 POST /api/sensitive/words/reload 立即重载
