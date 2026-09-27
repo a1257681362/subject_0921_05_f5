@@ -57,6 +57,12 @@ public class GlobalExceptionHandler {
         if (msg.contains("UK_BATCH_JOB_REQUEST")) {
             return ApiResponse.fail(BizCode.REQUEST_DUPLICATED);
         }
+        if (msg.contains("UK_QUOTA_HOLD_REQUEST")) {
+            return ApiResponse.fail(BizCode.REQUEST_DUPLICATED);
+        }
+        if (msg.contains("UK_QUOTA_ACCOUNT_STORE")) {
+            return ApiResponse.fail(BizCode.QUOTA_ACCOUNT_DUPLICATED);
+        }
         if (msg.contains("UK_ORDER_NO")) {
             return ApiResponse.fail(BizCode.ORDER_NO_DUPLICATED);
         }

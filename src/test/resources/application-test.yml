@@ -12,6 +12,9 @@ evops:
   sensitive:
     # 测试词库落盘文件：SensitiveWordIntegrationTest 的 @BeforeAll 写入，用例内改写验证热更新
     dict-path: file:./target/test-dict/sensitive-words.txt
+  quota:
+    # 测试不让定时扫描自动触发（1 小时后才首扫）：超时归还由用例直调 expireOverdue() 验证，避免竞态
+    expire-scan-ms: 3600000
 
 logging:
   file:

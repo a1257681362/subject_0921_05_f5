@@ -36,6 +36,13 @@ public enum BizCode {
     JOB_ALREADY_RUNNING("JOB_ALREADY_RUNNING", "已有同类型任务在执行或排队，请勿重复提交"),
     JOB_STATUS_ILLEGAL("JOB_STATUS_ILLEGAL", "当前任务状态不允许该操作"),
 
+    QUOTA_ACCOUNT_NOT_FOUND("QUOTA_ACCOUNT_NOT_FOUND", "门店额度账户不存在"),
+    QUOTA_ACCOUNT_DUPLICATED("QUOTA_ACCOUNT_DUPLICATED", "门店额度账户已存在"),
+    QUOTA_INSUFFICIENT("QUOTA_INSUFFICIENT", "门店可用额度不足"),
+    QUOTA_ADJUST_BELOW_OCCUPIED("QUOTA_ADJUST_BELOW_OCCUPIED", "调整后总额度不得低于当前占用加已实扣"),
+    QUOTA_HOLD_NOT_FOUND("QUOTA_HOLD_NOT_FOUND", "额度预占单不存在"),
+    QUOTA_HOLD_STATUS_ILLEGAL("QUOTA_HOLD_STATUS_ILLEGAL", "当前预占状态不允许该操作"),
+
     SYSTEM_ERROR("SYSTEM_ERROR", "系统处理失败");
 
     private final String code;

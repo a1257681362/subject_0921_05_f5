@@ -45,6 +45,13 @@ evops:
     retain-days: 21
     # 到期清理执行时刻（每日）；默认凌晨 03:17，避开整点
     cleanup-cron: "0 17 3 * * ?"
+  quota:
+    # 额度预占占用时长（分钟）：超时由定时扫描自动归还
+    hold-ttl-minutes: 40
+    # 超时预占扫描间隔（毫秒）
+    expire-scan-ms: 60000
+    # 每日日结对平执行时刻；默认凌晨 03:47，避开整点与 03:17 任务清理
+    recon-cron: "0 47 3 * * ?"
 
 logging:
   level:

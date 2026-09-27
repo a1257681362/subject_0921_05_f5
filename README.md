@@ -31,6 +31,10 @@ Spring Boot 骨架项目。技术栈：Java 8、Spring Boot 2.7、MyBatis-Plus�
 | `t_sensitive_scan_log` | 加工单文本敏感词扫描留痕（只追加，PASS/MASK/BLOCK/RECHECK） |
 | `t_batch_job` | 批量后台任务主表（RECHECK 等；进度/取消/重跑；运维数据，终态 21 天后物理清理） |
 | `t_batch_job_item` | 批量任务明细（每张加工单一行，断点重跑依据；随任务 21 天清理） |
+| `t_quota_account` | 门店额度账户（每门店一户：总额度/占用中/已实扣） |
+| `t_quota_hold` | 额度预占单（HELD/CONFIRMED/RELEASED/EXPIRED，40 分钟有效） |
+| `t_quota_flow` | 额度流水（只追加：RESERVE/CONFIRM/RELEASE/EXPIRE/ADJUST，含变动后余额快照） |
+| `t_quota_recon` | 额度日结对平报告（每账户每日一行，BALANCED/MISMATCH） |
 
 ## 加工单状态
 
@@ -66,6 +70,28 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - **保留 21 天**：终态任务 `expire_time = 完成时间 + 21 天`，每日 03:17 定时物理清理任务及明细（`evops.batch.retain-days` / `evops.batch.cleanup-cron` 可调）。这是全库"禁止物理删除"的唯一例外——任务记录是运维临时数据，业务留痕仍只追加。
 - 同步接口 `POST /api/sensitive/recheck` 保留：应急/小批量及别组既有取数方式不受影响。
 - 周末变更窗口实施前，向验光师发放检查单：`docs/batch-job-weekend-checklist.md`。
+
+## 门店额度三段式（预占-确认-释放）
+
+连锁运营额度管控：每门店一个额度账户（`store_code` 唯一，金额制），开单占用、成交实扣、反悔释放，全程流水可对账。
+
+- **账户口径**：账户 = 总额度 / 占用中 / 已实扣；**可用额度 = 总额 − 占用 − 实扣**（查询时计算）。开户 `POST /api/quota/accounts`，调额 `POST /api/quota/accounts/{id}/adjust`（不得低于当前占用加已实扣，否则 `QUOTA_ADJUST_BELOW_OCCUPIED`）。
+- **三段式状态机**：
+
+  ```
+  预占 HELD ──confirm──▶ CONFIRMED 已实扣（终态）
+     │  ├────release──▶ RELEASED 已手工释放（终态）
+     │  └────超时─────▶ EXPIRED 超时归还（终态）
+  ```
+
+- **预占**：`POST /api/quota/holds`，占用 **40 分钟**内有效（服务器时钟，`evops.quota.hold-ttl-minutes` 可配）；可用不足拒绝 `QUOTA_INSUFFICIENT`。可传 `bizType`/`bizNo` 挂业务单号（如 `PROCESS_ORDER` + 加工单号），预占日志可按加工单号聚合检索。
+- **超时自动还**：定时扫描（默认每 60s，`evops.quota.expire-scan-ms`）把到期预占置 `EXPIRED` 并归还占用，逐笔独立事务；重启漏扫的下一圈自然补上。确认/释放撞到已超时但扫描未及的预占时，当场内联结算归还（确认拒绝、释放按已归还处理）。
+- **实扣以预占为前提**：`POST /api/quota/holds/{holdNo}/confirm` 只能对 HELD 且未过期的预占**等额**实扣；无预占单 `QUOTA_HOLD_NOT_FOUND`，已实扣/已释放/已超时 `QUOTA_HOLD_STATUS_ILLEGAL`。
+- **释放可手工触发**：`POST /api/quota/holds/{holdNo}/release`，仅 HELD 可释放，占用即刻归还。
+- **并发与幂等**：余额变动走条件更新（`占用+实扣+本次 ≤ 总额`，0 行即额度不足），并发不超占；预占状态 CAS 流转（仅 HELD 可流转），手工与扫描互踢只有一方成功；`uk_quota_hold_request(request_no)` 兜底重复提交（`REQUEST_DUPLICATED`）。
+- **明细流水可对账**：每次余额变动写 `t_quota_flow`（只追加），含变动后三项余额快照；`GET /api/quota/flows?storeCode=&holdNo=&flowType=` 分页检索。
+- **占用与实扣日结对平**：每日 03:47（`evops.quota.recon-cron`）逐账户核对——账户占用=未结预占合计、账户实扣=实扣流水合计、每笔实扣必有预占来源、无超时未还预占（容忍 2 分钟扫描延迟）、占用+实扣不超总额；全对平 `BALANCED`，任一不符 `MISMATCH` 附差异明细，报告落 `t_quota_recon`（每账户每日一行，重跑覆盖）。手工触发 `POST /api/quota/recon/run`（可传 `storeCode` 收窄），查询 `GET /api/quota/recon`。
+- **操作手册**：`docs/quota-ops-manual.md`（验光师照跑版，含异常码对照）。
 
 ## 日志链路与聚合检索（总部质控要求）
 
@@ -110,6 +136,17 @@ CREATED 已建档 ──start──▶ PROCESSING 加工中 ──finish──�
 - `POST /api/batch/jobs` 提交任务（`{"jobType":"RECHECK","storeCode":?}`，立即返回任务号）
 - `GET  /api/batch/jobs/{jobNo}` 查进度（5% 粒度）与终态报告；`GET /api/batch/jobs?status=&jobType=` 列表
 - `POST /api/batch/jobs/{jobNo}/cancel` 取消；`POST /api/batch/jobs/{jobNo}/rerun` 断点重跑
+
+门店额度：
+
+- `POST /api/quota/accounts` 开户；`POST /api/quota/accounts/{id}/adjust` 调额
+- `GET  /api/quota/accounts/{id}`、`GET /api/quota/accounts?storeCode=`（含可用额度）
+- `POST /api/quota/holds` 预占（40 分钟有效，可传 `bizType`/`bizNo` 挂业务单号）
+- `POST /api/quota/holds/{holdNo}/confirm` 确认实扣（以预占为前提，等额）
+- `POST /api/quota/holds/{holdNo}/release` 手工释放
+- `GET  /api/quota/holds/{holdNo}`、`GET /api/quota/holds?storeCode=&status=`
+- `GET  /api/quota/flows?storeCode=&holdNo=&flowType=&current=&size=` 流水对账
+- `GET  /api/quota/recon?storeCode=&reconDate=` 日结对平报告；`POST /api/quota/recon/run` 手工触发
 
 示例（接口走 Shiro 认证，测试/本地可用 bootstrap/bootstrap）：
 
